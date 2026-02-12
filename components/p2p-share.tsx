@@ -348,12 +348,15 @@ export default function P2PShare() {
           `}
           onClick={() => isConnected && fileInputRef.current?.click()}
         >
+          {/* accept only files not directories, otherwise it will break the chunking logic and cause memory leaks. */}
           <input
             type="file"
+            accept="*/*"
             ref={fileInputRef}
             onChange={handleFileChange}
             className="hidden"
             multiple
+            // webkitdirectory={false}
           />
           <Upload
             className={`w-12 h-12 mx-auto mb-4 ${isConnected ? "text-primary" : "text-muted-foreground"}`}

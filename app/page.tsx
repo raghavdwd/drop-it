@@ -4,7 +4,7 @@ export default function Home() {
   return (
     <main className="container mx-auto py-10 px-4 min-h-screen flex flex-col items-center justify-center">
       <div className="text-center mb-10 space-y-2">
-        <h1 className="text-5xl font-black tracking-tighter bg-gradient-to-r from-primary to-primary/50 bg-clip-text text-transparent">
+        <h1 className="text-5xl font-black tracking-tighter bg-linear-to-r from-primary to-primary/50 bg-clip-text text-transparent">
           DROP IT
         </h1>
         <p className="text-muted-foreground font-medium">

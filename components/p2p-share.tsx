@@ -86,6 +86,14 @@ export default function P2PShare() {
       console.log("Connected to: " + conn.peer);
     });
 
+    /**
+     * Handle incoming data messages:
+     * - "metadata": Initialize a new file transfer with its details.
+     * - "chunk": Append incoming binary data to the corresponding file buffer and update progress.
+     * - "end": Finalize the file by creating a Blob from the collected chunks and generate a download URL.
+     * This structured approach allows for efficient handling of large files without overwhelming memory, while providing real-time progress updates to the user.
+     */
+
     conn.on("data", (data: any) => {
       // Handle different types of P2P messages
       if (data.type === "metadata") {
@@ -387,7 +395,7 @@ export default function P2PShare() {
             <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               Transfers
             </h4>
-            <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+            <div className="space-y-2 max-h-75 overflow-y-auto pr-2">
               {files.map((file) => (
                 <div key={file.id} className="p-3 border rounded-lg bg-card">
                   <div className="flex items-center justify-between mb-2">
@@ -401,7 +409,7 @@ export default function P2PShare() {
                         )}
                       </div>
                       <div>
-                        <div className="text-sm font-medium truncate max-w-[150px]">
+                        <div className="text-sm font-medium truncate max-w-37.5">
                           {file.name}
                         </div>
                         <div className="text-[10px] text-muted-foreground uppercase">

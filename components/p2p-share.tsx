@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback, use } from "react";
 import { Peer, type DataConnection } from "peerjs";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -25,6 +25,7 @@ import {
   Monitor,
   User,
   Loader2,
+  Link,
 } from "lucide-react";
 
 const CHUNK_SIZE = 16384; // 16KB chunks for reliable transfer
@@ -78,7 +79,7 @@ export default function P2PShare() {
   }, []);
 
   // Set up connection listeners
-  const setupConnection = (conn: DataConnection) => {
+  const setupConnection = useCallback((conn: DataConnection) => {
     setConnection(conn);
 
     conn.on("open", () => {
@@ -179,7 +180,7 @@ export default function P2PShare() {
       setIsConnected(false);
       setConnection(null);
     });
-  };
+  }, []);
 
   // Handle manual download trigger
   const handleDownload = (file: SharedFile) => {
@@ -287,12 +288,54 @@ export default function P2PShare() {
     }
   };
 
+  const handleCopyLink = () => {
+    const shareUrl = `${window.location.origin}/?peerId=${peerId}`;
+    navigator.clipboard
+      .writeText(shareUrl)
+      .then(() => {
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      })
+      .catch((error) => {
+        console.error("Failed to copy share link:", error);
+        setIsCopied(false);
+      });
+  };
+
+  useEffect(() => {
+    // Check for peerId in URL to auto-connect
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlPeerId = urlParams.get("peerId");
+    if (urlPeerId && peer) {
+      setRemoteId(urlPeerId);
+      const conn = peer.connect(urlPeerId);
+      setupConnection(conn);
+    }
+  }, [peer, setupConnection]);
+
   return (
     <Card className="w-full max-w-2xl mx-auto shadow-lg border-2">
-      <CardHeader className="bg-muted/50">
-        <CardTitle className="flex items-center gap-2">
+      <CardHeader className="flex flex-row bg-muted/50">
+        <CardTitle className="gap-2 flex items-center">
           <Monitor className="w-6 h-6" />
           P2P File Transfer
+        </CardTitle>
+        <CardTitle className="ml-auto gap-2">
+          {isCopied ? (
+            <div className="flex items-center gap-1 text-sm text-green-500">
+              <span>Link Copied</span>{" "}
+              <CheckCircle className="w-4 h-4 text-green-500" />
+            </div>
+          ) : (
+            <button
+              onClick={handleCopyLink}
+              disabled={!peerId || peerId === "Generating..."}
+              className="flex items-center cursor-pointer gap-1 text-sm text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Link className="w-4 h-4" />
+              Share Link
+            </button>
+          )}
         </CardTitle>
       </CardHeader>
 
@@ -309,18 +352,6 @@ export default function P2PShare() {
                 readOnly
                 className="font-mono text-xs bg-muted"
               />
-              <Button
-                size="icon"
-                variant="outline"
-                onClick={copyToClipboard}
-                disabled={!peerId}
-              >
-                {isCopied ? (
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                ) : (
-                  <Copy className="w-4 h-4" />
-                )}
-              </Button>
             </div>
           </div>
 

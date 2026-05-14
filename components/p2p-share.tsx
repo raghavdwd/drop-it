@@ -3,6 +3,7 @@
 import type React from "react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Peer, type DataConnection } from "peerjs";
+import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -26,6 +27,8 @@ import {
   User,
   Loader2,
   Link,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 const CHUNK_SIZE = 16384; // 16KB chunks for reliable transfer
@@ -48,6 +51,12 @@ export default function P2PShare() {
   const [files, setFiles] = useState<SharedFile[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Track incoming chunks by file ID
   const incomingChunks = useRef<Record<string, Uint8Array[]>>({});
@@ -314,80 +323,126 @@ export default function P2PShare() {
   }, [peer, setupConnection]);
 
   return (
-    <Card className="w-full max-w-2xl mx-auto shadow-lg border-2">
-      <CardHeader className="flex flex-row bg-muted/50">
-        <CardTitle className="gap-2 flex items-center">
-          <Monitor className="w-6 h-6" />
-          P2P File Transfer
-        </CardTitle>
-        <CardTitle className="ml-auto gap-2">
+    <Card className="w-full max-w-2xl mx-auto shadow-sm border border-border/50 bg-card/30 backdrop-blur-sm">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-7 bg-transparent">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-primary/5 rounded-full">
+            <Monitor className="w-5 h-5 text-primary/70" />
+          </div>
+          <CardTitle className="text-xl font-semibold tracking-tight">
+            Drop It
+          </CardTitle>
+        </div>
+        <div className="flex items-center gap-3">
+          {mounted && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full w-9 h-9"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? (
+                <Sun className="h-[1.1rem] w-[1.1rem]" />
+              ) : (
+                <Moon className="h-[1.1rem] w-[1.1rem]" />
+              )}
+            </Button>
+          )}
           {isCopied ? (
-            <div className="flex items-center gap-1 text-sm text-green-500">
-              <span>Link Copied</span>{" "}
-              <CheckCircle className="w-4 h-4 text-green-500" />
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-500/10 text-[11px] font-medium text-green-600 dark:text-green-400 border border-green-500/20">
+              <CheckCircle className="w-3 h-3" />
+              <span>Copied</span>
             </div>
           ) : (
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={handleCopyLink}
               disabled={!peerId || peerId === "Generating..."}
-              className="flex items-center cursor-pointer gap-1 text-sm text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded-full h-8 text-[11px] font-medium gap-1.5 px-4"
             >
-              <Link className="w-4 h-4" />
+              <Link className="w-3 h-3" />
               Share Link
-            </button>
+            </Button>
           )}
-        </CardTitle>
+        </div>
       </CardHeader>
 
-      <CardContent className="space-y-6 pt-6">
+      <CardContent className="space-y-10 pt-4">
         {/* Connection Setup */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium flex items-center gap-2">
-              <User className="w-4 h-4" /> Your ID
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-3">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 px-1">
+              Your Identifier
             </label>
-            <div className="flex gap-2">
+            <div className="relative group">
               <Input
                 value={peerId || "Generating..."}
                 readOnly
-                className="font-mono text-xs bg-muted"
+                className="font-mono text-xs bg-muted/30 border-none rounded-xl h-11 px-4 focus-visible:ring-1 focus-visible:ring-primary/20 transition-all"
               />
+              <button 
+                onClick={copyToClipboard}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 hover:bg-primary/5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium flex items-center gap-2">
-              <LinkIcon className="w-4 h-4" /> Remote Peer ID
+          <div className="space-y-3">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2 px-1">
+              Remote Peer
             </label>
             <div className="flex gap-2">
               <Input
-                placeholder="Paste Peer ID..."
+                placeholder="Enter Peer ID..."
                 value={remoteId}
                 onChange={(e) => setRemoteId(e.target.value)}
                 disabled={isConnected}
-                className="font-mono text-xs"
+                className="font-mono text-xs bg-muted/30 border-none rounded-xl h-11 px-4 focus-visible:ring-1 focus-visible:ring-primary/20 transition-all"
               />
               <Button
                 onClick={handleConnect}
                 disabled={isConnected || !remoteId}
+                className="rounded-xl h-11 px-6 font-medium shadow-sm transition-all active:scale-95"
               >
-                {isConnected ? "Connected" : "Connect"}
+                {isConnected ? "Live" : "Connect"}
               </Button>
             </div>
           </div>
         </div>
 
-        <Separator />
-
         {/* File Area */}
         <div
           className={`
-            border-2 border-dashed rounded-xl p-10 text-center transition-colors
-            ${isConnected ? "cursor-pointer hover:bg-muted/50 border-primary/20" : "bg-muted/20 border-muted opacity-50 cursor-not-allowed"}
+            relative overflow-hidden group
+            border-2 border-dashed rounded-3xl p-16 text-center transition-all duration-300
+            ${isConnected 
+              ? "cursor-pointer hover:border-primary/40 hover:bg-primary/[0.02] border-primary/10" 
+              : "bg-muted/10 border-muted/50 opacity-40 cursor-not-allowed"}
           `}
           onClick={() => isConnected && fileInputRef.current?.click()}
         >
-          {/* accept only files not directories, otherwise it will break the chunking logic and cause memory leaks. */}
+          <div className="relative z-10">
+            <div className={`
+              w-16 h-16 mx-auto mb-6 rounded-2xl flex items-center justify-center transition-colors
+              ${isConnected ? "bg-primary/5 text-primary" : "bg-muted text-muted-foreground"}
+            `}>
+              <Upload className="w-8 h-8" />
+            </div>
+            <h3 className="text-lg font-medium tracking-tight">
+              {isConnected
+                ? "Send something new"
+                : "Awaiting connection"}
+            </h3>
+            <p className="text-sm text-muted-foreground mt-2 max-w-[240px] mx-auto leading-relaxed">
+              {isConnected 
+                ? "Click to browse or drop files here for direct transfer."
+                : "Once connected, you can share files of any size."}
+            </p>
+          </div>
+          
           <input
             type="file"
             accept="*/*"
@@ -395,80 +450,87 @@ export default function P2PShare() {
             onChange={handleFileChange}
             className="hidden"
             multiple
-            // webkitdirectory={false}
           />
-          <Upload
-            className={`w-12 h-12 mx-auto mb-4 ${isConnected ? "text-primary" : "text-muted-foreground"}`}
-          />
-          <h3 className="text-lg font-semibold">
-            {isConnected
-              ? "Click to share a file"
-              : "Connect to a peer to share files"}
-          </h3>
-          <p className="text-sm text-muted-foreground mt-2">
-            Files are sent directly from your device to theirs.
-          </p>
         </div>
 
         {/* Status indicator */}
         {isConnected && (
-          <div className="flex items-center justify-center gap-2 text-green-600 bg-green-50 py-2 rounded-full border border-green-100">
-            <CheckCircle className="w-4 h-4" />
-            <span className="text-sm font-medium">
-              Stable P2P Connection Established
+          <div className="flex items-center justify-center gap-2 text-primary/80 bg-primary/5 py-2.5 rounded-2xl border border-primary/10 animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+            <span className="text-[12px] font-medium tracking-wide">
+              Secure P2P Channel Active
             </span>
           </div>
         )}
 
         {/* File List */}
         {files.length > 0 && (
-          <div className="space-y-3">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Transfers
-            </h4>
-            <div className="space-y-2 max-h-75 overflow-y-auto pr-2">
+          <div className="space-y-5 animate-in fade-in duration-700">
+            <div className="flex items-center justify-between px-1">
+              <h4 className="text-[11px] font-bold uppercase tracking-[0.15em] text-muted-foreground/70">
+                Active Transfers
+              </h4>
+              <span className="text-[10px] font-medium text-muted-foreground/50">
+                {files.length} {files.length === 1 ? 'file' : 'files'}
+              </span>
+            </div>
+            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
               {files.map((file) => (
-                <div key={file.id} className="p-3 border rounded-lg bg-card">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-primary/10 rounded-md">
+                <div key={file.id} className="group p-4 rounded-2xl border border-border/40 bg-card/50 hover:bg-card hover:border-border/80 transition-all duration-200">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-primary/5 rounded-xl flex items-center justify-center group-hover:bg-primary/10 transition-colors">
                         {file.status === "receiving" ||
                         file.status === "ready" ? (
-                          <Download className="w-4 h-4 text-primary" />
+                          <Download className="w-4.5 h-4.5 text-primary/70" />
                         ) : (
-                          <FileText className="w-4 h-4 text-primary" />
+                          <FileText className="w-4.5 h-4.5 text-primary/70" />
                         )}
                       </div>
-                      <div>
-                        <div className="text-sm font-medium truncate max-w-37.5">
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium truncate max-w-[200px] md:max-w-[300px]">
                           {file.name}
                         </div>
-                        <div className="text-[10px] text-muted-foreground uppercase">
-                          {(file.size / 1024 / 1024).toFixed(2)} MB •{" "}
-                          {file.status === "ready" ? "Available" : file.status}
+                        <div className="flex items-center gap-2 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
+                          <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                          <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+                          <span className={file.status === "ready" ? "text-green-500/80" : ""}>
+                            {file.status === "ready" ? "Completed" : file.status}
+                          </span>
                         </div>
                       </div>
                     </div>
-                    {file.status === "completed" && (
-                      <CheckCircle className="w-5 h-5 text-green-500" />
-                    )}
-                    {file.status === "ready" && (
-                      <Button
-                        size="sm"
-                        variant="default"
-                        className="h-8 gap-1 px-2"
-                        onClick={() => handleDownload(file)}
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        Save
-                      </Button>
-                    )}
-                    {(file.status === "sending" ||
-                      file.status === "receiving") && (
-                      <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                    )}
+                    <div className="flex items-center gap-2">
+                      {file.status === "completed" && (
+                        <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center">
+                          <CheckCircle className="w-4 h-4 text-green-500/70" />
+                        </div>
+                      )}
+                      {file.status === "ready" && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-9 rounded-xl gap-2 px-4 shadow-sm hover:bg-primary hover:text-primary-foreground transition-all"
+                          onClick={() => handleDownload(file)}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span className="text-xs">Save</span>
+                        </Button>
+                      )}
+                      {(file.status === "sending" ||
+                        file.status === "receiving") && (
+                        <div className="text-[11px] font-mono font-medium text-primary/70">
+                          {Math.round(file.progress)}%
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <Progress value={file.progress} className="h-1.5" />
+                  <div className="relative h-1.5 w-full bg-muted/40 rounded-full overflow-hidden">
+                    <div 
+                      className="absolute top-0 left-0 h-full bg-primary transition-all duration-300 ease-out"
+                      style={{ width: `${file.progress}%` }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -476,8 +538,8 @@ export default function P2PShare() {
         )}
       </CardContent>
 
-      <CardFooter className="bg-muted/30 text-[10px] text-center justify-center text-muted-foreground">
-        No server involved. Data stays in your browser.
+      <CardFooter className="py-8 text-[10px] font-medium uppercase tracking-[0.2em] text-center justify-center text-muted-foreground/40">
+        Encrypted P2P • No Cloud • Total Privacy
       </CardFooter>
     </Card>
   );

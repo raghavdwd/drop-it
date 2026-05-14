@@ -5,27 +5,20 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Peer, type DataConnection } from "peerjs";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import {
   Card,
   CardHeader,
   CardTitle,
   CardContent,
-  CardFooter,
 } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import {
   Upload,
   Download,
   Copy,
   CheckCircle,
-  X,
-  Link as LinkIcon,
   FileText,
   Monitor,
-  User,
-  Loader2,
   Link,
   Moon,
   Sun,
@@ -51,12 +44,14 @@ export default function P2PShare() {
   const [files, setFiles] = useState<SharedFile[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  const effectiveTheme = mounted ? resolvedTheme : "light";
 
   // Track incoming chunks by file ID
   const incomingChunks = useRef<Record<string, Uint8Array[]>>({});
@@ -339,9 +334,10 @@ export default function P2PShare() {
               variant="ghost"
               size="icon"
               className="rounded-full w-9 h-9"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              aria-label={`Switch to ${effectiveTheme === "dark" ? "light" : "dark"} mode`}
+              onClick={() => setTheme(effectiveTheme === "dark" ? "light" : "dark")}
             >
-              {theme === "dark" ? (
+              {effectiveTheme === "dark" ? (
                 <Sun className="h-[1.1rem] w-[1.1rem]" />
               ) : (
                 <Moon className="h-[1.1rem] w-[1.1rem]" />
@@ -383,7 +379,8 @@ export default function P2PShare() {
               />
               <button 
                 onClick={copyToClipboard}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 hover:bg-primary/5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="Copy identifier to clipboard"
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 hover:bg-primary/5 rounded-md opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
               >
                 <Copy className="w-3.5 h-3.5 text-muted-foreground" />
               </button>
@@ -438,7 +435,7 @@ export default function P2PShare() {
             </h3>
             <p className="text-sm text-muted-foreground mt-2 max-w-[240px] mx-auto leading-relaxed">
               {isConnected 
-                ? "Click to browse or drop files here for direct transfer."
+                ? "Click to browse files for direct transfer."
                 : "Once connected, you can share files of any size."}
             </p>
           </div>

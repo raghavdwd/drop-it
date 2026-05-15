@@ -12,6 +12,11 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/*
+ * Metadata is a Next.js convention for setting <head> content.
+ * Next.js injects the title, meta description, and favicon link
+ * automatically at build/request time (SSR-friendly).
+ */
 export const metadata: Metadata = {
   title: "Drop It - Zero-server Peer-to-Peer File Sharing",
   description:
@@ -21,6 +26,13 @@ export const metadata: Metadata = {
   },
 };
 
+/*
+ * RootLayout — wraps every page in the app.
+ *
+ * The font CSS variable classes are applied to <body> so that all child
+ * components can use them via Tailwind's font-sans / font-mono utilities.
+ * `antialiased` is a Tailwind class that enables smooth font rendering.
+ */
 export default function RootLayout({
   children,
 }: Readonly<{

@@ -134,6 +134,8 @@ export default function P2PShare() {
   const [connection, setConnection] = useState<DataConnection | null>(null);
   const [files, setFiles] = useState<SharedFile[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [isDisconnectedInMidTransfer, setIsDisconnectedInMidTransfer] =
+    useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
   /*
@@ -147,6 +149,11 @@ export default function P2PShare() {
   const incomingChunks = useRef<Record<string, Uint8Array[]>>({});
   const receivedSize = useRef<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const connectionRef = useRef<DataConnection | null>(null);
+  const lastPongTimestamp = useRef<number>(Date.now());
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
 
   /*
    * Effect: Create the PeerJS peer instance once on mount.
@@ -200,139 +207,133 @@ export default function P2PShare() {
    *              message types (metadata / chunk / end).
    *   - "close": The remote peer disconnected or the connection dropped.
    */
-  const setupConnection = useCallback((conn: DataConnection) => {
-    setConnection(conn);
-
-    conn.on("open", () => {
-      setIsConnected(true);
-      console.log("Connected to: " + conn.peer);
-    });
-
-    /*
-     * The "data" handler implements our simple file-transfer protocol.
-     *
-     * Message types:
-     *   ┌──────────┬──────────────────────────────────────────────┐
-     *   │ "metadata" │ Announce an incoming file (name, size, etc) │
-     *   │ "chunk"    │ A 16 KB binary slice of the file            │
-     *   │ "end"      │ All chunks sent; reassemble into a Blob     │
-     *   └──────────┴──────────────────────────────────────────────┘
-     *
-     * Each message carries an "id" field so we can handle multiple
-     * concurrent file transfers without mixing chunks between files.
-     */
-    conn.on("data", (data: any) => {
-
-      /*
-       * METADATA — The sender is telling us "I'm about to send a file".
-       * We create a new SharedFile entry in state to show it in the UI,
-       * and initialise accumulator arrays in refs.
-       */
-      if (data.type === "metadata") {
-
-        const newFile: SharedFile = {
-          id: data.id,
-          name: data.name,
-          size: data.size,
-          type: data.fileType,
-          progress: 0,
-          status: "receiving",
-        };
-        setFiles((prev) => [newFile, ...prev]);
-        incomingChunks.current[data.id] = [];
-        receivedSize.current[data.id] = 0;
-
-      /*
-       * CHUNK — A binary piece of the file arrived.
-       * We push it into the accumulator and update progress.
-       * Progress is capped at 99% until the "end" signal arrives, because
-       * we need all chunks before the file is usable.
-       */
-      } else if (data.type === "chunk") {
-
-        const { id, chunk } = data;
-
-        if (incomingChunks.current[id]) {
-
-          /*
-           * The chunk arrives as an ArrayBuffer from the WebRTC data channel.
-           * PeerJS may deliver it as a plain Array or Uint8Array depending on
-           * the browser, so we normalise it here.
-           */
-          const dataArray =
-            chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-          incomingChunks.current[id].push(dataArray);
-          receivedSize.current[id] += dataArray.byteLength;
-
-          setFiles((prev) =>
-            prev.map((f) => {
-              if (f.id === id) {
-
-                const progress = Math.min(
-                  (receivedSize.current[id] / f.size) * 100,
-                  99,
-                );
-                return { ...f, progress };
-              }
-              return f;
-            }),
-          );
-        }
-
-      /*
-       * END — The sender has finished sending all chunks.
-       * We concatenate all accumulated Uint8Arrays into a single Blob,
-       * create an object URL for it, and mark the file as "ready" so the
-       * user can click "Save" to download it.
-       *
-       * We then clean up the ref entries to free memory.
-       */
-      } else if (data.type === "end") {
-
-        const { id } = data;
-        const chunks = incomingChunks.current[id];
-
-        if (chunks && chunks.length > 0) {
-
-          const finalChunks = [...chunks];
-
-          setFiles((prev) => {
-            const file = prev.find((f) => f.id === id);
-            if (!file) return prev;
-
-            /*
-             * Blob constructor accepts an array of ArrayBuffer-views.
-             * The MIME type from the original file is preserved so the
-             * browser handles it correctly when downloaded.
-             */
-            const blob = new Blob(finalChunks as any, { type: file.type });
-            const url = URL.createObjectURL(blob);
-
-            return prev.map((f) =>
-              f.id === id
-                ? {
-                    ...f,
-                    progress: 100,
-                    status: "ready",
-                    url,
-                  }
-                : f,
-            );
-          });
-
-          delete incomingChunks.current[id];
-          delete receivedSize.current[id];
-        } else {
-          console.error(`Received 'end' for ${id} but no chunks were found!`);
-        }
-      }
-    });
-
-    conn.on("close", () => {
-      setIsConnected(false);
-      setConnection(null);
-    });
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
   }, []);
+
+  const setupConnection = useCallback(
+    (conn: DataConnection) => {
+      setConnection(conn);
+      connectionRef.current = conn;
+
+      conn.on("open", () => {
+        setIsConnected(true);
+        setIsDisconnectedInMidTransfer(false);
+        lastPongTimestamp.current = Date.now();
+
+        stopHeartbeat();
+        heartbeatIntervalRef.current = setInterval(() => {
+          const c = connectionRef.current;
+          if (!c || !c.open) {
+            stopHeartbeat();
+            return;
+          }
+          if (Date.now() - lastPongTimestamp.current > 7000) {
+            c.close();
+            return;
+          }
+          c.send({ type: "ping" });
+        }, 3000);
+      });
+
+      conn.on("data", (data: any) => {
+        if (data.type === "ping") {
+          conn.send({ type: "pong" });
+          return;
+        }
+        if (data.type === "pong") {
+          lastPongTimestamp.current = Date.now();
+          return;
+        }
+
+        if (data.type === "metadata") {
+          const newFile: SharedFile = {
+            id: data.id,
+            name: data.name,
+            size: data.size,
+            type: data.fileType,
+            progress: 0,
+            status: "receiving",
+          };
+          setFiles((prev) => [newFile, ...prev]);
+          incomingChunks.current[data.id] = [];
+          receivedSize.current[data.id] = 0;
+        } else if (data.type === "chunk") {
+          const { id, chunk } = data;
+
+          if (incomingChunks.current[id]) {
+            const dataArray =
+              chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+            incomingChunks.current[id].push(dataArray);
+            receivedSize.current[id] += dataArray.byteLength;
+
+            setFiles((prev) =>
+              prev.map((f) => {
+                if (f.id === id) {
+                  const progress = Math.min(
+                    (receivedSize.current[id] / f.size) * 100,
+                    99,
+                  );
+                  return { ...f, progress };
+                }
+                return f;
+              }),
+            );
+          }
+        } else if (data.type === "end") {
+          const { id } = data;
+          const chunks = incomingChunks.current[id];
+
+          if (chunks && chunks.length > 0) {
+            const finalChunks = [...chunks];
+
+            setFiles((prev) => {
+              const file = prev.find((f) => f.id === id);
+              if (!file) return prev;
+
+              const blob = new Blob(finalChunks as any, { type: file.type });
+              const url = URL.createObjectURL(blob);
+
+              return prev.map((f) =>
+                f.id === id
+                  ? {
+                      ...f,
+                      progress: 100,
+                      status: "ready",
+                      url,
+                    }
+                  : f,
+              );
+            });
+
+            delete incomingChunks.current[id];
+            delete receivedSize.current[id];
+          } else {
+            console.error(`Received 'end' for ${id} but no chunks were found!`);
+          }
+        }
+      });
+
+      conn.on("close", () => {
+        stopHeartbeat();
+        setIsConnected(false);
+        setIsDisconnectedInMidTransfer(true);
+        setConnection(null);
+        connectionRef.current = null;
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.status === "sending" || f.status === "receiving"
+              ? { ...f, status: "error" as const }
+              : f,
+          ),
+        );
+      });
+    },
+    [stopHeartbeat],
+  );
 
   /*
    * handleDownload — Trigger a file save dialog for a received file.
@@ -392,11 +393,12 @@ export default function P2PShare() {
    */
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;
-    if (!selectedFiles || !connection) return;
+    if (!selectedFiles || !connectionRef.current) return;
 
     for (let i = 0; i < selectedFiles.length; i++) {
       const file = selectedFiles[i];
       const fileId = Math.random().toString(36).substring(7);
+      let aborted = false;
 
       setFiles((prev) => [
         {
@@ -410,7 +412,7 @@ export default function P2PShare() {
         ...prev,
       ]);
 
-      connection.send({
+      connectionRef.current.send({
         type: "metadata",
         id: fileId,
         name: file.name,
@@ -421,17 +423,24 @@ export default function P2PShare() {
       const reader = new FileReader();
       let offset = 0;
 
-      /*
-       * readNextChunk — Read the next 16 KB slice of the file.
-       * Uses recursion (called from reader.onload) to read chunks
-       * sequentially until the entire file is consumed.
-       */
       const readNextChunk = () => {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
         reader.readAsArrayBuffer(slice);
       };
 
       reader.onload = (event) => {
+        if (aborted) return;
+
+        if (!connectionRef.current || !connectionRef.current.open) {
+          aborted = true;
+          setFiles((prev) =>
+            prev.map((f) =>
+              f.id === fileId ? { ...f, status: "error" as const } : f,
+            ),
+          );
+          return;
+        }
+
         if (event.target?.error) {
           console.error("FileReader error:", event.target.error);
           return;
@@ -441,8 +450,7 @@ export default function P2PShare() {
         if (!chunk || chunk.byteLength === 0) {
           console.warn("Read empty chunk, skipping...");
         } else {
-
-          connection.send({
+          connectionRef.current.send({
             type: "chunk",
             id: fileId,
             chunk: chunk,
@@ -459,8 +467,9 @@ export default function P2PShare() {
         if (offset < file.size) {
           readNextChunk();
         } else {
-
-          connection.send({ type: "end", id: fileId });
+          if (connectionRef.current) {
+            connectionRef.current.send({ type: "end", id: fileId });
+          }
           setFiles((prev) =>
             prev.map((f) =>
               f.id === fileId ? { ...f, status: "completed" } : f,
@@ -507,7 +516,6 @@ export default function P2PShare() {
    *     after the peer instance is set in state.
    */
   useEffect(() => {
-
     const urlParams = new URLSearchParams(window.location.search);
     const urlPeerId = urlParams.get("peerId");
     if (urlPeerId && peer) {
@@ -615,6 +623,14 @@ export default function P2PShare() {
             <CheckCircle className="w-4 h-4" />
             <span className="text-sm font-medium">
               Stable P2P Connection Established
+            </span>
+          </div>
+        )}
+        {isDisconnectedInMidTransfer && (
+          <div className="flex items-center justify-center gap-2 text-red-600 bg-red-50 py-2 rounded-full border border-red-100">
+            <span className="text-sm px-2 m-2 font-medium">
+              Connection Lost During Transfer. May be your peer disconnected or
+              network dropped. Please try again.
             </span>
           </div>
         )}

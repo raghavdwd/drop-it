@@ -108,6 +108,19 @@ interface SharedFile {
   url?: string;
 }
 
+type TransferData =
+  | { type: "ping" }
+  | { type: "pong" }
+  | {
+      type: "metadata";
+      id: string;
+      name: string;
+      size: number;
+      fileType: string;
+    }
+  | { type: "chunk"; id: string; chunk: Uint8Array | ArrayBuffer }
+  | { type: "end"; id: string };
+
 /*
  * P2PShare — Main component
  * --------------------------
@@ -115,23 +128,29 @@ interface SharedFile {
  * APIs (WebRTC, FileReader, navigator.clipboard, URL.createObjectURL).
  *
  * State overview:
- *   - peerId / peer:  Our PeerJS identity. Created once on mount.
+ *   - peerId:         Our PeerJS identity. Created once on mount.
  *   - remoteId:       The peer ID the user wants to connect to.
  *   - connection:     The active DataConnection to the remote peer.
  *   - files:          Array of all transfers (in/out), drives the UI list.
  *   - isConnected:    Derived boolean for UI feedback.
  *   - isCopied:       Brief flash feedback when user copies ID/link.
  *
- * Refs (useRef instead of state to avoid re-renders on every chunk):
- *   - incomingChunks:  Accumulates binary chunks per file ID.
- *   - receivedSize:    Tracks how many bytes have arrived per file ID.
- *   - fileInputRef:    Reference to the hidden <input type="file">.
+ * Refs (useRef instead of state to avoid re-renders):
+ *   - incomingChunks:      Accumulates binary chunks per file ID.
+ *   - receivedSize:        Tracks how many bytes have arrived per file ID.
+ *   - fileInputRef:        Reference to the hidden <input type="file">.
+ *   - connectionRef:       Mirrors `connection` state to avoid stale closures
+ *                          in async chunk sending.
+ *   - lastPongTimestamp:   Tracks last pong for heartbeat disconnect detection.
+ *   - heartbeatIntervalRef: Interval that sends periodic pings and checks if
+ *                           pong is overdue (>7s) to detect peer disconnect
+ *                           before WebRTC ICE timeout (which can take 30s+).
  */
 export default function P2PShare() {
   const [peerId, setPeerId] = useState<string>("");
   const [remoteId, setRemoteId] = useState<string>("");
-  const [peer, setPeer] = useState<Peer | null>(null);
   const [connection, setConnection] = useState<DataConnection | null>(null);
+  const [connSpeed, setConnSpeed] = useState<number | null>(null);
   const [files, setFiles] = useState<SharedFile[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isDisconnectedInMidTransfer, setIsDisconnectedInMidTransfer] =
@@ -148,11 +167,173 @@ export default function P2PShare() {
    */
   const incomingChunks = useRef<Record<string, Uint8Array[]>>({});
   const receivedSize = useRef<Record<string, number>>({});
+  const incomingStartTimes = useRef<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const peerRef = useRef<Peer | null>(null);
   const connectionRef = useRef<DataConnection | null>(null);
-  const lastPongTimestamp = useRef<number>(Date.now());
+  const lastPongTimestamp = useRef<number>(0);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
     null,
+  );
+
+  /*
+   * stopHeartbeat — Clear the ping/pong heartbeat interval.
+   * Called on connection close and when re-establishing heartbeat intervals.
+   */
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+  }, []);
+
+  /*
+   * setupConnection — Attach event handlers to a DataConnection.
+   *
+   * Called for BOTH outbound connections (user clicks Connect) AND
+   * inbound connections (remote peer initiated). The same handler set is
+   * reused because the protocol is symmetric.
+   *
+   * DataConnection events:
+   *   - "open":  The WebRTC data channel is fully open. Starts heartbeat
+   *              (ping/pong every 3s) to detect peer disconnect quickly.
+   *   - "data":  Custom protocol with five message types:
+   *                ping/pong — heartbeat liveness check.
+   *                metadata / chunk / end — file transfer protocol.
+   *   - "close": Peer disconnected or heartbeat timed out. Stops heartbeat,
+   *              nulls the connection ref, marks in-flight files as error.
+   */
+  const setupConnection = useCallback(
+    (conn: DataConnection) => {
+      setConnection(conn);
+      connectionRef.current = conn;
+
+      conn.on("open", () => {
+        setIsConnected(true);
+        setIsDisconnectedInMidTransfer(false);
+        setConnSpeed(null);
+        lastPongTimestamp.current = Date.now();
+
+        stopHeartbeat();
+        heartbeatIntervalRef.current = setInterval(() => {
+          const c = connectionRef.current;
+          if (!c || !c.open) {
+            stopHeartbeat();
+            return;
+          }
+          if (Date.now() - lastPongTimestamp.current > 7000) {
+            c.close();
+            return;
+          }
+          c.send({ type: "ping" });
+        }, 3000);
+      });
+
+      conn.on("data", (data: unknown) => {
+        const msg = data as TransferData;
+        if (msg.type === "ping") {
+          conn.send({ type: "pong" });
+          return;
+        }
+        if (msg.type === "pong") {
+          lastPongTimestamp.current = Date.now();
+          return;
+        }
+
+        if (msg.type === "metadata") {
+          const startTime = Date.now();
+          const newFile: SharedFile = {
+            id: msg.id,
+            name: msg.name,
+            size: msg.size,
+            type: msg.fileType,
+            progress: 0,
+            status: "receiving",
+          };
+          setFiles((prev) => [newFile, ...prev]);
+          incomingChunks.current[msg.id] = [];
+          receivedSize.current[msg.id] = 0;
+          incomingStartTimes.current[msg.id] = startTime;
+        } else if (msg.type === "chunk") {
+          const { id, chunk } = msg;
+          if (incomingChunks.current[id]) {
+            const dataArray =
+              chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+            incomingChunks.current[id].push(dataArray);
+            receivedSize.current[id] += dataArray.byteLength;
+            const startTime = incomingStartTimes.current[id];
+            if (startTime) {
+              const elapsedTime = (Date.now() - startTime) / 1000; // seconds
+              const speed = receivedSize.current[id] / elapsedTime; // bytes per second
+              setConnSpeed(speed);
+            }
+            setFiles((prev) =>
+              prev.map((f) => {
+                if (f.id === id) {
+                  const progress = Math.min(
+                    (receivedSize.current[id] / f.size) * 100,
+                    99,
+                  );
+                  return { ...f, progress };
+                }
+                return f;
+              }),
+            );
+          }
+        } else if (msg.type === "end") {
+          const { id } = msg;
+          const chunks = incomingChunks.current[id];
+
+          if (chunks && chunks.length > 0) {
+            const finalChunks = [...chunks];
+
+            setFiles((prev) => {
+              const file = prev.find((f) => f.id === id);
+              if (!file) return prev;
+
+              const blob = new Blob(finalChunks as any, { type: file.type });
+              const url = URL.createObjectURL(blob);
+
+              return prev.map((f) =>
+                f.id === id
+                  ? {
+                      ...f,
+                      progress: 100,
+                      status: "ready",
+                      url,
+                    }
+                  : f,
+              );
+            });
+
+            delete incomingChunks.current[id];
+            delete receivedSize.current[id];
+            delete incomingStartTimes.current[id];
+            setConnSpeed(null);
+          } else {
+            console.error(`Received 'end' for ${id} but no chunks were found!`);
+          }
+        }
+      });
+
+      conn.on("close", () => {
+        stopHeartbeat();
+        setIsConnected(false);
+        setIsDisconnectedInMidTransfer(true);
+        setConnSpeed(null);
+        setConnection(null);
+        connectionRef.current = null;
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.status === "sending" || f.status === "receiving"
+              ? { ...f, status: "error" as const }
+              : f,
+          ),
+        );
+        incomingStartTimes.current = {};
+      });
+    },
+    [stopHeartbeat],
   );
 
   /*
@@ -187,153 +368,13 @@ export default function P2PShare() {
       console.error("PeerJS error:", err);
     });
 
-    setPeer(newPeer);
+    peerRef.current = newPeer;
 
     return () => {
+      peerRef.current = null;
       newPeer.destroy();
     };
-  }, []);
-
-  /*
-   * setupConnection — Attach event handlers to a DataConnection.
-   *
-   * This is called for BOTH outbound connections (user clicks Connect) AND
-   * inbound connections (remote peer initiated). The same handler set is
-   * reused because the protocol is symmetric.
-   *
-   * DataConnection events:
-   *   - "open":  The WebRTC data channel is fully open. We can send data.
-   *   - "data":  A message arrived. We use a custom protocol with three
-   *              message types (metadata / chunk / end).
-   *   - "close": The remote peer disconnected or the connection dropped.
-   */
-  const stopHeartbeat = useCallback(() => {
-    if (heartbeatIntervalRef.current) {
-      clearInterval(heartbeatIntervalRef.current);
-      heartbeatIntervalRef.current = null;
-    }
-  }, []);
-
-  const setupConnection = useCallback(
-    (conn: DataConnection) => {
-      setConnection(conn);
-      connectionRef.current = conn;
-
-      conn.on("open", () => {
-        setIsConnected(true);
-        setIsDisconnectedInMidTransfer(false);
-        lastPongTimestamp.current = Date.now();
-
-        stopHeartbeat();
-        heartbeatIntervalRef.current = setInterval(() => {
-          const c = connectionRef.current;
-          if (!c || !c.open) {
-            stopHeartbeat();
-            return;
-          }
-          if (Date.now() - lastPongTimestamp.current > 7000) {
-            c.close();
-            return;
-          }
-          c.send({ type: "ping" });
-        }, 3000);
-      });
-
-      conn.on("data", (data: any) => {
-        if (data.type === "ping") {
-          conn.send({ type: "pong" });
-          return;
-        }
-        if (data.type === "pong") {
-          lastPongTimestamp.current = Date.now();
-          return;
-        }
-
-        if (data.type === "metadata") {
-          const newFile: SharedFile = {
-            id: data.id,
-            name: data.name,
-            size: data.size,
-            type: data.fileType,
-            progress: 0,
-            status: "receiving",
-          };
-          setFiles((prev) => [newFile, ...prev]);
-          incomingChunks.current[data.id] = [];
-          receivedSize.current[data.id] = 0;
-        } else if (data.type === "chunk") {
-          const { id, chunk } = data;
-
-          if (incomingChunks.current[id]) {
-            const dataArray =
-              chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-            incomingChunks.current[id].push(dataArray);
-            receivedSize.current[id] += dataArray.byteLength;
-
-            setFiles((prev) =>
-              prev.map((f) => {
-                if (f.id === id) {
-                  const progress = Math.min(
-                    (receivedSize.current[id] / f.size) * 100,
-                    99,
-                  );
-                  return { ...f, progress };
-                }
-                return f;
-              }),
-            );
-          }
-        } else if (data.type === "end") {
-          const { id } = data;
-          const chunks = incomingChunks.current[id];
-
-          if (chunks && chunks.length > 0) {
-            const finalChunks = [...chunks];
-
-            setFiles((prev) => {
-              const file = prev.find((f) => f.id === id);
-              if (!file) return prev;
-
-              const blob = new Blob(finalChunks as any, { type: file.type });
-              const url = URL.createObjectURL(blob);
-
-              return prev.map((f) =>
-                f.id === id
-                  ? {
-                      ...f,
-                      progress: 100,
-                      status: "ready",
-                      url,
-                    }
-                  : f,
-              );
-            });
-
-            delete incomingChunks.current[id];
-            delete receivedSize.current[id];
-          } else {
-            console.error(`Received 'end' for ${id} but no chunks were found!`);
-          }
-        }
-      });
-
-      conn.on("close", () => {
-        stopHeartbeat();
-        setIsConnected(false);
-        setIsDisconnectedInMidTransfer(true);
-        setConnection(null);
-        connectionRef.current = null;
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.status === "sending" || f.status === "receiving"
-              ? { ...f, status: "error" as const }
-              : f,
-          ),
-        );
-      });
-    },
-    [stopHeartbeat],
-  );
+  }, [setupConnection]);
 
   /*
    * handleDownload — Trigger a file save dialog for a received file.
@@ -361,8 +402,8 @@ export default function P2PShare() {
    * event fires on both sides when the data channel is ready.
    */
   const handleConnect = () => {
-    if (!peer || !remoteId) return;
-    const conn = peer.connect(remoteId);
+    if (!peerRef.current || !remoteId) return;
+    const conn = peerRef.current.connect(remoteId);
     setupConnection(conn);
   };
 
@@ -384,6 +425,12 @@ export default function P2PShare() {
    *   5. Send each slice as a "chunk" message.
    *   6. After the last chunk, send an "end" signal.
    *   7. Mark the file as "completed" in local state.
+   *
+   * Disconnect handling: uses connectionRef.current instead of closure-
+   * captured `connection` so the latest state is always checked. Before
+   * each chunk, verifies connectionRef.current?.open; if the peer
+   * disconnected (detected by heartbeat or WebRTC close), the transfer
+   * is aborted and marked as error.
    *
    * Why FileReader instead of Response / Blob.stream()?
    *   - FileReader is widely supported and gives us precise control over
@@ -422,9 +469,13 @@ export default function P2PShare() {
 
       const reader = new FileReader();
       let offset = 0;
-
+      const startTime = Date.now(); //for calculating speed
       const readNextChunk = () => {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const elapsedTime = (Date.now() - startTime) / 1000; // seconds
+        const sentBytes = offset + slice.size;
+        const speed = sentBytes / elapsedTime; // bytes per second
+        setConnSpeed(speed);
         reader.readAsArrayBuffer(slice);
       };
 
@@ -470,6 +521,7 @@ export default function P2PShare() {
           if (connectionRef.current) {
             connectionRef.current.send({ type: "end", id: fileId });
           }
+          setConnSpeed(null);
           setFiles((prev) =>
             prev.map((f) =>
               f.id === fileId ? { ...f, status: "completed" } : f,
@@ -510,20 +562,18 @@ export default function P2PShare() {
    * the recipient opens the link and gets connected without typing anything.
    *
    * Why is this a separate effect and not in the init effect?
-   *   - The init effect runs once on mount when `peer` is null.
    *   - We need to wait until the peer is ready before connecting.
-   *   - By depending on [peer, setupConnection], this effect fires only
-   *     after the peer instance is set in state.
+   *   - By depending on [peerId, setupConnection], this effect fires only
+   *     after the peer has opened and peerRef.current is ready.
    */
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const urlPeerId = urlParams.get("peerId");
-    if (urlPeerId && peer) {
-      setRemoteId(urlPeerId);
-      const conn = peer.connect(urlPeerId);
+    if (urlPeerId && peerId && peerRef.current) {
+      const conn = peerRef.current.connect(urlPeerId);
       setupConnection(conn);
     }
-  }, [peer, setupConnection]);
+  }, [peerId, setupConnection]);
 
   return (
     <Card className="w-full max-w-2xl mx-auto shadow-lg border-2">
@@ -631,6 +681,13 @@ export default function P2PShare() {
             <span className="text-sm px-2 m-2 font-medium">
               Connection Lost During Transfer. May be your peer disconnected or
               network dropped. Please try again.
+            </span>
+          </div>
+        )}
+        {connSpeed && (
+          <div className="flex items-center justify-center gap-2 text-blue-600 bg-blue-50 py-2 rounded-full border border-blue-100">
+            <span className="text-sm px-2 m-2 font-medium">
+              Current Transfer Speed: {(connSpeed / 1024).toFixed(2)} KB/s
             </span>
           </div>
         )}

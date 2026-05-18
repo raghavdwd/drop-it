@@ -231,12 +231,16 @@ export default function P2PShare() {
 
       conn.on("data", (data: unknown) => {
         const msg = data as TransferData;
+
+        // Any incoming data means the connection is alive — reset the
+        // heartbeat timer so active transfers don't trigger a false timeout.
+        lastPongTimestamp.current = Date.now();
+
         if (msg.type === "ping") {
           conn.send({ type: "pong" });
           return;
         }
         if (msg.type === "pong") {
-          lastPongTimestamp.current = Date.now();
           return;
         }
 

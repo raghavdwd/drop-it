@@ -588,9 +588,9 @@ export default function P2PShare() {
         </CardTitle>
         <CardTitle className="ml-auto gap-2">
           {isCopied ? (
-            <div className="flex items-center gap-1 text-sm text-green-500">
+            <div className="flex items-center gap-1 text-sm text-primary">
               <span>Link Copied</span>{" "}
-              <CheckCircle className="w-4 h-4 text-green-500" />
+              <CheckCircle className="w-4 h-4 text-primary" />
             </div>
           ) : (
             <button
@@ -673,7 +673,7 @@ export default function P2PShare() {
         </div>
 
         {isConnected && (
-          <div className="flex items-center justify-center gap-2 text-green-600 bg-green-50 py-2 rounded-full border border-green-100">
+          <div className="flex items-center justify-center gap-2 text-primary bg-primary/10 py-2 rounded-full border border-primary/20">
             <CheckCircle className="w-4 h-4" />
             <span className="text-sm font-medium">
               Stable P2P Connection Established
@@ -681,7 +681,7 @@ export default function P2PShare() {
           </div>
         )}
         {isDisconnectedInMidTransfer && (
-          <div className="flex items-center justify-center gap-2 text-red-600 bg-red-50 py-2 rounded-full border border-red-100">
+          <div className="flex items-center justify-center gap-2 text-destructive bg-destructive/10 py-2 rounded-full border border-destructive/20">
             <span className="text-sm px-2 m-2 font-medium">
               Connection Lost During Transfer. May be your peer disconnected or
               network dropped. Please try again.
@@ -689,7 +689,7 @@ export default function P2PShare() {
           </div>
         )}
         {connSpeed && (
-          <div className="flex items-center justify-center gap-2 text-blue-600 bg-blue-50 py-2 rounded-full border border-blue-100">
+          <div className="flex items-center justify-center gap-2 text-foreground bg-muted py-2 rounded-full border border-border">
             <span className="text-sm px-2 m-2 font-medium">
               Current Transfer Speed: {(connSpeed / 1024).toFixed(2)} KB/s
             </span>
@@ -725,7 +725,7 @@ export default function P2PShare() {
                       </div>
                     </div>
                     {file.status === "completed" && (
-                      <CheckCircle className="w-5 h-5 text-green-500" />
+                      <CheckCircle className="w-5 h-5 text-primary" />
                     )}
                     {file.status === "ready" && (
                       <Button
